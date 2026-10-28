@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: stardust-postman
+    name: meltdown-countdown
     runtime: static
     buildCommand: echo "Static site ready"
     staticPublishPath: .
