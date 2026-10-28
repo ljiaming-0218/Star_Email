@@ -27,7 +27,7 @@ const CONFIG={
   lateAlarm:30,lateSpeed:1.2,pathRefresh:.45,hearingDecoy:230,hearCooldown:.8,loseSightDelay:1,crouchVisibility:.6,collisionStep:5,clockPickupRange:18,gradeS:55,gradeA:75,gradeB:100,saveKey:'meltdown_best_v1'
 };
 const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');ctx.imageSmoothingEnabled=false;const lightCanvas=document.createElement('canvas');lightCanvas.width=960;lightCanvas.height=540;const light=lightCanvas.getContext('2d');
-const art={};for(const name of ['facility-floor','operative','patrol','hunter','keycard','terminal','time-supply']){let image=new Image();image.src='assets/'+name+'.webp';art[name]=image}
+const art={};for(const name of ['facility-floor','operative','patrol','hunter','keycard','terminal','time-supply','reactor-title']){let image=new Image();image.src='assets/'+name+'.webp';art[name]=image}
 function sprite(name,x,y,size,angle=0){let image=art[name];if(!image.complete||!image.naturalWidth)return false;ctx.save();ctx.translate(x,y);ctx.rotate(angle);ctx.imageSmoothingEnabled=true;ctx.drawImage(image,-size/2,-size/2,size,size);ctx.restore();return true}
 const W=CONFIG.roomCols*CONFIG.roomW+1,H=CONFIG.roomRows*CONFIG.roomH+1,T=CONFIG.tile;
 const DIFFICULTIES=[
@@ -37,6 +37,7 @@ const DIFFICULTIES=[
 ];
 let difficulty=1;
 let screen='menu',game=null,buttons=[],keys={},muted=false,help=false,audio=null,last=0,acc=0,menuTime=0;
+let ambient=null,ambientClock=0;
 let touch={id:null,x:0,y:0,sprint:false,crouch:false},pointerActions=new Map();
 function rand(g){g.seed=(Math.imul(g.seed,1664525)+1013904223)>>>0;return g.seed/4294967296}
 function choose(g,a){return a[Math.floor(rand(g)*a.length)]}
@@ -89,6 +90,16 @@ function makeGame(){
 function bestRead(level=difficulty){try{let n=Number(localStorage.getItem(level===1?CONFIG.saveKey:CONFIG.saveKey+'_'+level));return Number.isFinite(n)&&n>0?n:null}catch(e){return null}}
 function bestSave(n,level=difficulty){try{let b=bestRead(level);if(!b||n<b)localStorage.setItem(level===1?CONFIG.saveKey:CONFIG.saveKey+'_'+level,String(n))}catch(e){}}
 function sound(type,frequency){if(muted)return;try{audio=audio||new(window.AudioContext||window.webkitAudioContext)();if(audio.state==='suspended')audio.resume();let now=audio.currentTime,o=audio.createOscillator(),v=audio.createGain(),freq=frequency||({step:95,beep:550,alarm:580,heart:75,zap:1000,boom:65,card:700,decoy:420}[type]||400);o.type=type==='boom'?'sawtooth':type==='step'||type==='heart'?'sine':'square';o.frequency.setValueAtTime(freq,now);o.frequency.exponentialRampToValueAtTime(Math.max(30,freq*(type==='alarm'?1.35:.5)),now+(type==='boom'?.8:.13));v.gain.setValueAtTime(type==='boom'?.08:.025,now);v.gain.exponentialRampToValueAtTime(.0001,now+(type==='boom'?1:.15));o.connect(v);v.connect(audio.destination);o.start(now);o.stop(now+(type==='boom'?1:.16))}catch(e){}}
+// A low, procedural reactor hum builds with danger and obeys the same mute control as effects.
+function updateAmbient(dt){
+  ambientClock-=dt;if(ambientClock>0)return;ambientClock=.25;
+  if(!audio)return;
+  if(!ambient){try{let gain=audio.createGain(),low=audio.createOscillator(),high=audio.createOscillator();gain.gain.value=0;low.type='sine';low.frequency.value=54;high.type='triangle';high.frequency.value=81;low.connect(gain);high.connect(gain);gain.connect(audio.destination);low.start();high.start();ambient={gain,low,high}}catch(e){return}}
+  let active=screen==='play'&&game&&!game.paused&&!muted;
+  let tension=active&&(game.time<=CONFIG.lateAlarm||game.robots.some(r=>r.state==='chase')||game.hunters.some(h=>h.awake&&dist(h,game.player)<300));
+  ambient.gain.gain.setTargetAtTime(active?(tension?.012:.006):0,audio.currentTime,.15);
+  ambient.high.frequency.setTargetAtTime(tension?87:81,audio.currentTime,.5);
+}
 function msg(g,s,t=2.5){g.message=s;g.messageTime=t}
 function burst(g,x,y,color,n=12){for(let i=0;i<n;i++){let a=rand(g)*Math.PI*2,s=30+rand(g)*100;g.particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:.3+rand(g)*.6,color})}}
 function alertNoise(g,source,range){for(const r of g.robots){if(r.state==='chase'||dist(r,source)>range||r.heardCooldown>0)continue;r.state='suspicious';r.target={x:source.x,y:source.y};r.search=CONFIG.searchTime;r.repath=0;r.heardCooldown=CONFIG.hearCooldown}}
@@ -128,24 +139,22 @@ function line(x1,y1,x2,y2,color,w=1){ctx.strokeStyle=color;ctx.lineWidth=w;ctx.b
 function circle(x,y,r,color){ctx.fillStyle=color;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill()}
 function text(s,x,y,size=16,color='#e7f6ed',align='left'){ctx.fillStyle=color;ctx.textAlign=align;ctx.textBaseline='middle';ctx.font=`${size}px ui-monospace,monospace`;ctx.fillText(s,x,y)}
 function box(x,y,w,h){rect(x,y,w,h,'#0c151beF');rect(x,y,w,2,'#5c817d');rect(x,y+h-2,w,2,'#263e45');rect(x,y,2,h,'#5c817d');rect(x+w-2,y,2,h,'#263e45')}
-function button(label,x,y,w,h,action,options={}){rect(x,y,w,h,options.active?'#ae5838':options.primary?'#df6e42':'#1a3439');rect(x,y,w,2,options.primary?'#ffb27d':'#779892');rect(x,y+h-3,w,3,'#081115');text(label,x+w/2,y+h/2,options.size||15,options.primary?'#11191a':'#e0f1e7','center');buttons.push({x,y,w,h,action,hold:options.hold})}
+function button(label,x,y,w,h,action,options={}){rect(x,y,w,h,options.active?'#ae5838':options.primary?'#a94532':'#17292c');rect(x,y,w,2,options.primary?'#d77a5e':'#526e6a');rect(x,y+h-3,w,3,'#081115');text(label,x+w/2,y+h/2,options.size||15,options.primary?'#fff0df':'#d5e5df','center');buttons.push({x,y,w,h,action,hold:options.hold})}
 function drawBackground(){rect(0,0,960,540,'#080f14');for(let i=0;i<36;i++){let x=(i*127+23)%960,y=(i*83+27)%540;rect(x,y,2,2,'#305151')}for(let i=0;i<12;i++)line(0,i*54,960,i*54,'#12242b',1)}
 function drawMenu(){
   drawBackground();
-  // The reactor cross-section establishes the facility's visual identity.
-  let glow=ctx.createRadialGradient(735,250,25,735,250,330);glow.addColorStop(0,'#d4763c55');glow.addColorStop(.45,'#8c3c2520');glow.addColorStop(1,'#080f1400');rect(0,0,960,540,glow);
-  ctx.strokeStyle='#527c7930';ctx.lineWidth=1;for(let r=95;r<260;r+=38){ctx.beginPath();ctx.arc(735,250,r,0,Math.PI*2);ctx.stroke()}
-  ctx.save();ctx.translate(735,250);ctx.rotate(menuTime*.08);for(let i=0;i<12;i++){ctx.rotate(Math.PI/6);rect(110,-3,55,6,'#b8693f66');rect(178,-2,23,4,'#e9a35b77')}ctx.restore();
-  circle(735,250,88,'#1b302d');circle(735,250,72,'#412e25');circle(735,250,55,'#bc633b');circle(735,250,41,'#e89a5b');circle(735,250,24,'#f5ce89');
+  const title=art['reactor-title'];if(title.complete&&title.naturalWidth){ctx.drawImage(title,0,0,960,540)}
+  let shade=ctx.createLinearGradient(0,0,650,0);shade.addColorStop(0,'#04090de8');shade.addColorStop(.58,'#04090dc9');shade.addColorStop(1,'#04090d00');rect(0,0,960,540,shade);
+  rect(0,0,960,540,'#02080a22');
   rect(48,49,35,3,'#e27c4c');text('FACILITY 07   /   EMERGENCY PROTOCOL',48,67,12,'#85a9a2');
-  text('熔毁倒计时',48,128,45,'#f3eee2');text('反应堆失控。带着密钥，找到离开的路。',50,169,15,'#a7bcb2');
+  text('熔毁倒计时',48,128,45,'#f3eee2');text('警报响起之后，出口只剩一条路。',50,169,15,'#c2c8bd');
   text('选择行动难度',50,218,12,'#72928d');
   DIFFICULTIES.forEach((d,i)=>button(d.name,50+i*108,236,100,36,()=>{difficulty=i},{active:i===difficulty,size:14}));
   text(DIFFICULTIES[difficulty].description+'  ·  '+DIFFICULTIES[difficulty].time+' 秒',50,295,13,'#c3d4c8');
   button('开始行动  →',50,328,316,48,()=>start(),{primary:true,size:17});
   button(help?'收起说明':'行动指南',50,389,152,38,()=>{help=!help},{size:14});button(muted?'声音：关':'声音：开',214,389,152,38,()=>{muted=!muted;sound('beep')},{size:14});
   if(help){box(390,330,530,165);text('行动指南',414,355,17,'#f4dfbd');text('WASD / 方向键移动 · Shift 冲刺 · C 蹲行',414,385,13,'#c4d8cc');text('E 交互 · 空格诱饵 · P 暂停 · M 静音',414,410,13,'#c4d8cc');text('收集 3 张卡 → 解锁闸门 → 启动逃生舱',414,435,13,'#c4d8cc');text('安保终端可令巡逻机器人停机 8 秒，仅限一次。',414,460,12,'#e7ba83');text('触屏使用左侧摇杆和右侧按钮。',414,480,12,'#91aaa1')}
-  text('每次行动，设施布局都会改变',50,489,12,'#71918b');
+  text('收集密钥。避开追猎。在熔毁之前逃出去。',50,489,12,'#a1aca2');
 }
 function start(){try{game=makeGame();screen='play';keys={};touch={id:null,x:0,y:0,sprint:false,crouch:false};pointerActions.clear();sound('beep')}catch(e){game=null;screen='menu';help=true}}
 function drawFloor(g){let cam=g.camera,x0=Math.max(0,Math.floor(cam.x/T)-1),x1=Math.min(W-1,Math.ceil((cam.x+960)/T)),y0=Math.max(0,Math.floor(cam.y/T)-1),y1=Math.min(H-1,Math.ceil((cam.y+540)/T));for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){let sx=x*T-cam.x,sy=y*T-cam.y;if(solid(g,x,y)){rect(sx,sy,T,T,'#1b2c2e');rect(sx,sy,T,4,'#56716d');rect(sx,sy+T-5,T,5,'#0b1519');rect(sx+2,sy+6,T-4,T-13,'#293d3d');rect(sx+4,sy+8,T-8,2,'#48615b');rect(sx+4,sy+T-9,T-8,2,'#101d20');if((x+y)%3===0){rect(sx+5,sy+12,3,3,'#78948a');rect(sx+T-8,sy+12,3,3,'#78948a')}}else{let floor=art['facility-floor'];if(floor.complete&&floor.naturalWidth){ctx.drawImage(floor,(x%8)*64,(y%8)*64,64,64,sx,sy,T,T);rect(sx,sy,T,T,'#07151755')}else rect(sx,sy,T,T,(x+y)%2?'#172329':'#1b2b2f');if((x*17+y*23)%47===0)rect(sx+8,sy+8,8,2,'#78918a55')}}}
@@ -164,12 +173,14 @@ function drawWorld(g){let cam=g.camera;drawFloor(g);ctx.save();ctx.translate(-ca
   for(const p of g.particles)rect(p.x,p.y,3,3,p.color);
   let pl=g.player;circle(pl.x,pl.y,15,'#9fe9cf25');if(!sprite('operative',pl.x,pl.y,40,pl.facing))rect(pl.x-8,pl.y-9,16,18,'#78c1a6');ctx.restore();
 }
-function drawLighting(g){let p=g.player,cam=g.camera,px=p.x-cam.x,py=p.y-cam.y,r=245;light.clearRect(0,0,960,540);light.globalCompositeOperation='source-over';light.fillStyle='#0006';light.fillRect(0,0,960,540);light.globalCompositeOperation='destination-out';light.beginPath();for(let i=0;i<=160;i++){let a=i/160*Math.PI*2,d=0;for(d=0;d<r;d+=5)if(solid(g,Math.floor((p.x+Math.cos(a)*d)/T),Math.floor((p.y+Math.sin(a)*d)/T)))break;let x=px+Math.cos(a)*d,y=py+Math.sin(a)*d;if(i===0)light.moveTo(x,y);else light.lineTo(x,y)}light.closePath();let gradient=light.createRadialGradient(px,py,20,px,py,r);gradient.addColorStop(0,'rgba(0,0,0,.94)');gradient.addColorStop(.7,'rgba(0,0,0,.72)');gradient.addColorStop(1,'rgba(0,0,0,0)');light.fillStyle=gradient;light.fill();light.globalCompositeOperation='source-over';ctx.drawImage(lightCanvas,0,0)}
+function drawLighting(g){let p=g.player,cam=g.camera,px=p.x-cam.x,py=p.y-cam.y,r=225;light.clearRect(0,0,960,540);light.globalCompositeOperation='source-over';light.fillStyle='#000a';light.fillRect(0,0,960,540);light.globalCompositeOperation='destination-out';light.beginPath();for(let i=0;i<=160;i++){let a=i/160*Math.PI*2,d=0;for(d=0;d<r;d+=5)if(solid(g,Math.floor((p.x+Math.cos(a)*d)/T),Math.floor((p.y+Math.sin(a)*d)/T)))break;let x=px+Math.cos(a)*d,y=py+Math.sin(a)*d;if(i===0)light.moveTo(x,y);else light.lineTo(x,y)}light.closePath();let gradient=light.createRadialGradient(px,py,20,px,py,r);gradient.addColorStop(0,'rgba(0,0,0,.94)');gradient.addColorStop(.7,'rgba(0,0,0,.72)');gradient.addColorStop(1,'rgba(0,0,0,0)');light.fillStyle=gradient;light.fill();light.globalCompositeOperation='source-over';ctx.drawImage(lightCanvas,0,0)}
 function drawMiniMap(g){let x=772,y=70,s=13;box(x-7,y-7,CONFIG.roomCols*s+14,CONFIG.roomRows*s+14);for(const [a,b] of g.edges){let ax=x+(a%CONFIG.roomCols)*s+4,ay=y+Math.floor(a/CONFIG.roomCols)*s+4,bx=x+(b%CONFIG.roomCols)*s+4,by=y+Math.floor(b/CONFIG.roomCols)*s+4;line(ax,ay,bx,by,'#6a8b7c',2)}for(let i=0;i<20;i++)rect(x+(i%5)*s,y+Math.floor(i/5)*s,8,8,'#49645d');for(const c of g.cards)if(!c.taken){let t=tileAt(c.x,c.y),rx=Math.floor(t.x/CONFIG.roomW),ry=Math.floor(t.y/CONFIG.roomH);rect(x+rx*s+2,y+ry*s+2,4,4,'#8af3ca')}if(!g.terminalUsed){let t=tileAt(g.terminal.x,g.terminal.y);rect(x+Math.floor(t.x/CONFIG.roomW)*s+2,y+Math.floor(t.y/CONFIG.roomH)*s+2,4,4,'#65d6ee')}let pt=tileAt(g.player.x,g.player.y),rx=clamp(Math.floor(pt.x/CONFIG.roomW),0,4),ry=clamp(Math.floor(pt.y/CONFIG.roomH),0,3);rect(x+rx*s+1,y+ry*s+1,6,6,'#fff3bb');let goal=g.gateOpen?g.exit:g.gate,gt=tileAt(goal.x,goal.y);rect(x+Math.floor(gt.x/CONFIG.roomW)*s+2,y+Math.floor(gt.y/CONFIG.roomH)*s+2,4,4,'#f28c62')}
 function drawHUD(g){let p=g.player,secs=Math.ceil(g.time),timer=String(Math.floor(secs/60)).padStart(2,'0')+':'+String(secs%60).padStart(2,'0');rect(0,0,960,62,'#091214ee');text('体力',24,19,13,'#9fb9ad');rect(24,33,160,9,'#30433d');rect(24,33,160*p.stamina/CONFIG.staminaMax,9,p.lock>0?'#d46b52':'#8ed4a4');text(p.lock>0?'喘息中':'冲刺 / SHIFT',24,54,10,'#98aaa4');text(timer,480,29,35,g.time<=CONFIG.lateAlarm?'#ff6e5e':'#f7e5be','center');text('密钥卡  '+g.found+' / 3',714,29,17,'#b5f0d2');button(muted?'静音':'音效',880,13,58,30,()=>{muted=!muted;sound('beep')});drawMiniMap(g);
   text(g.gateOpen?'目标：前往逃生舱':g.found===3?'目标：解锁中央闸门':'目标：收集密钥卡',480,82,12,'#b5cdc1','center');
   if(g.empTime>0){text('安保停机 '+g.empTime.toFixed(1)+' 秒',24,79,12,'#83e6db')}else if(!g.terminalUsed){text('安保终端可入侵',24,79,12,'#a4c3bb')}
-  if(g.time<=CONFIG.lateAlarm&&Math.floor(g.elapsed*4)%2===0){rect(0,62,960,4,'#fd6155');text('反应堆临界 · 巡逻加速',480,77,13,'#ff9b84','center')}
+  let waking=Math.max(0,Math.ceil(g.difficultyInfo.hunterWake-g.elapsed));text(waking?'猎杀者苏醒：'+waking+' 秒':'猎杀者正在追踪',24,99,12,waking>10?'#9aaea4':'#ec8b73');
+  let threat=Math.max(0,...g.robots.map(r=>r.awareness));if(threat>.05){text(threat>=1?'已暴露 · 快找掩护':'正在被发现',24,119,12,'#ff9784');rect(24,129,110,4,'#542e2d');rect(24,129,110*threat,4,'#e96d59')}
+  if(g.time<=CONFIG.lateAlarm&&Math.floor(g.elapsed*4)%2===0){rect(0,62,960,4,'#fd6155');text('反应堆临界 · 巡逻加速',480,147,13,'#ff9b84','center')}
   let awake=g.hunters.filter(h=>h.awake),near=awake.length?Math.min(...awake.map(h=>dist(h,p))):9999;if(near<300){let pulse=(.5+.5*Math.sin(g.elapsed*(near<150?12:6)))*(1-near/300);let grad=ctx.createRadialGradient(480,270,120,480,270,560);grad.addColorStop(0,'#ff000000');grad.addColorStop(1,`rgba(220,25,22,${pulse*.65})`);rect(0,0,960,540,grad)}
   if(g.messageTime>0){box(220,92,520,35);text(g.message,480,109,14,'#f7d695','center')}
   let i=nearestInteraction(g);if(i&&!g.action){box(280,440,400,34);text(i.label,480,457,14,'#e9f2db','center')}
@@ -178,9 +189,9 @@ function drawHUD(g){let p=g.player,secs=Math.ceil(g.time),timer=String(Math.floo
   if('ontouchstart' in window){circle(102,376,52,'#d6eee51f');circle(102+touch.x*28,376+touch.y*28,21,'#b0ead788');button('冲刺',751,352,87,39,()=>{},{hold:'sprint',active:touch.sprint,size:14});button('蹲行',846,352,87,39,()=>{touch.crouch=!touch.crouch},{active:touch.crouch,size:14});button('交互',751,398,87,39,interact,{size:14});button('诱饵',846,398,87,39,decoy,{size:14})}
   button(g.paused?'继续':'暂停',880,48,58,26,()=>{g.paused=!g.paused},{size:12});if(g.paused){box(330,185,300,130);text('已暂停',480,218,24,'#f4e5c9','center');button('继续',380,250,200,38,()=>{g.paused=false},{primary:true})}
 }
-function drawResult(){drawBackground();let g=game;text(g.win?'逃生成功':'任务失败',480,105,38,g.win?'#a2f3c5':'#ff8b73','center');text(g.reason+'  ·  '+g.difficultyInfo.name,480,151,16,'#d4d6c5','center');box(235,187,490,190);text('耗时',270,219,15,'#9eb7aa');text(g.used.toFixed(1)+' 秒',685,219,17,'#f5e5c6','right');text('被发现次数',270,255,15,'#9eb7aa');text(String(g.detections),685,255,17,'#f5e5c6','right');text('评级',270,291,15,'#9eb7aa');text(g.rating,685,291,28,'#f4b76e','right');let best=bestRead(g.difficulty);text('最佳通关',270,337,15,'#9eb7aa');text(best?best.toFixed(1)+' 秒':'暂无',685,337,17,'#f5e5c6','right');button('再试一次',275,410,190,44,()=>start(),{primary:true});button('返回菜单',495,410,190,44,()=>{screen='menu';help=false})}
+function drawResult(){drawBackground();let g=game;text(g.win?'逃生成功':'任务失败',480,105,38,g.win?'#a2f3c5':'#ff8b73','center');text(g.reason+'  ·  '+g.difficultyInfo.name,480,151,16,'#d4d6c5','center');box(235,187,490,190);text('耗时',270,219,15,'#9eb7aa');text(g.used.toFixed(1)+' 秒',685,219,17,'#f5e5c6','right');text('被发现次数',270,255,15,'#9eb7aa');text(String(g.detections),685,255,17,'#f5e5c6','right');text('评级',270,291,15,'#9eb7aa');text(g.rating,685,291,28,'#f4b76e','right');let best=bestRead(g.difficulty);text('最佳通关',270,337,15,'#9eb7aa');text(best?best.toFixed(1)+' 秒':'暂无',685,337,17,'#f5e5c6','right');text(g.win?'你逃了出来。下次试着更快、更安静。':`本次拿到 ${g.found} / 3 张密钥卡 · 再试一次，找到另一条路。`,480,393,12,'#b8a69b','center');button('再试一次',275,410,190,44,()=>start(),{primary:true});button('返回菜单',495,410,190,44,()=>{screen='menu';help=false})}
 function render(){buttons=[];if(screen==='menu')drawMenu();else if(screen==='result')drawResult();else{drawWorld(game);drawLighting(game);drawHUD(game)}}
-function tick(now){if(!last)last=now;let delta=Math.min(.1,(now-last)/1000);last=now;acc+=delta;while(acc>=1/CONFIG.fps){if(screen==='play'&&!game.paused)updateGame(1/CONFIG.fps);else if(screen==='menu')menuTime+=1/CONFIG.fps;acc-=1/CONFIG.fps}render();requestAnimationFrame(tick)}
+function tick(now){if(!last)last=now;let delta=Math.min(.1,(now-last)/1000);last=now;updateAmbient(delta);acc+=delta;while(acc>=1/CONFIG.fps){if(screen==='play'&&!game.paused)updateGame(1/CONFIG.fps);else if(screen==='menu')menuTime+=1/CONFIG.fps;acc-=1/CONFIG.fps}render();requestAnimationFrame(tick)}
 function pointerPos(e){let r=canvas.getBoundingClientRect();return {x:(e.clientX-r.left)*960/r.width,y:(e.clientY-r.top)*540/r.height}}
 canvas.addEventListener('pointerdown',e=>{e.preventDefault();canvas.focus();let p=pointerPos(e);if(screen==='play'&&!game.paused&&p.x<195&&p.y>300&&p.y<465&&touch.id===null){touch.id=e.pointerId;canvas.setPointerCapture(e.pointerId);touch.x=clamp((p.x-102)/45,-1,1);touch.y=clamp((p.y-376)/45,-1,1);return}for(const b of buttons.slice().reverse())if(p.x>=b.x&&p.x<=b.x+b.w&&p.y>=b.y&&p.y<=b.y+b.h){if(b.hold){touch[b.hold]=true;pointerActions.set(e.pointerId,b.hold);canvas.setPointerCapture(e.pointerId)}else b.action();break}});
 canvas.addEventListener('pointermove',e=>{if(e.pointerId===touch.id){let p=pointerPos(e);touch.x=clamp((p.x-102)/45,-1,1);touch.y=clamp((p.y-376)/45,-1,1)}});
